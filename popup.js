@@ -14,7 +14,10 @@
     if (tab && tab.url && /^https?:\/\/chatgpt\.com\//.test(tab.url)) {
       tabId = tab.id;
       const u = new URL(tab.url);
-      url = u.origin + u.pathname;
+      // Strip trailing slash so this matches the storage key written by
+      // content.js::canonicalUrl() (chatgpt sometimes redirects to /c/uuid/
+      // and sometimes not).
+      url = (u.origin + u.pathname).replace(/\/+$/, '');
     }
   } catch (_) {
     // ignore

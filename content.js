@@ -76,7 +76,10 @@
   }
 
   function canonicalUrl() {
-    return location.origin + location.pathname;
+    // Strip trailing slash so canonicalization is stable across chatgpt
+    // redirects that may or may not add one. chrome.storage keys must
+    // match between content.js (writer) and popup.js (reader).
+    return (location.origin + location.pathname).replace(/\/+$/, '');
   }
 
   function conversationId() {

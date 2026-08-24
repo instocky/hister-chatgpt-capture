@@ -48,3 +48,9 @@ coverage/
 .cache/
 .tmp/
 tmp/
+
+# Chrome runtime artifacts (declarativeNetRequest index, MV3 service worker state)
+# These are auto-generated on each machine when the extension is loaded,
+# not source of truth. rule_resources in rules.json is the source of truth.
+_metadata/
+

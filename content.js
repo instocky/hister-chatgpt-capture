@@ -4,26 +4,34 @@
 //   - DOM extraction via [data-message-author-role]
 //   - empty-message filter
 //   - extract-once: build messages[] ONCE, then derive text + hash from the same array
-//   - 3s debounce after the last relevant DOM mutation
 //   - chrome.runtime.sendMessage to service_worker.js
+//   - manual capture (scroll-march) triggered by popup click
 //
 // Hard rules:
 //   - innerText called EXACTLY once per node (F4 / §15 spike).
 //   - NO network calls. NO storage. NO Origin header (MV3 forbids; Chrome sets it).
-//   - MutationObserver on document.body with re-attach on root replace (F12).
 //   - url = location.origin + location.pathname (F13).
+//
+// v0.2 — capture strategy changed from auto-on-mutation to manual-only
+// (with single-shot initial settle). Reason: scroll-induced DOM materialization
+// on long ChatGPT threads causes the lazy-loaded messages to be re-hashed on
+// every scroll tick, which overwrites the Hister doc with intermediate state
+// instead of a settled snapshot. Manual trigger from popup forces a full
+// scroll-march first, then captures the complete message set. See
+// docs/Handoff.md "Capture strategy" for the design rationale.
 
 (() => {
   'use strict';
 
   const SELECTOR = '[data-message-author-role]';
-  const DEBOUNCE_MS = 3000;
   const ROLE_USER = 'user';
   const ROLE_ASSISTANT = 'assistant';
 
-  let debounceTimer = null;
-  let observer = null;
-  let observedBody = null;
+  const SCROLL_STEP_PAUSE_MS = 200;
+  const SCROLL_MAX_STEPS = 50;
+  const SCROLL_NO_GROW_LIMIT = 3;
+
+  let autoCaptureDone = false;
 
   /**
    * Build messages[] exactly once. innerText is called once per node.
@@ -112,47 +120,77 @@
       const res = await chrome.runtime.sendMessage(payload);
       console.log('[hister-capture] dispatchCapture: SW response', res);
     } catch (err) {
-      // SW may be inactive or unload mid-send. Next MO tick will re-fire.
       console.log('[hister-capture] sendMessage failed:', err && err.message);
     }
   }
 
-  function scheduleCapture(reason) {
-    if (debounceTimer) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      debounceTimer = null;
-      dispatchCapture(reason).catch(err =>
-        console.debug('[hister-capture] dispatch failed:', err && err.message)
-      );
-    }, DEBOUNCE_MS);
+  function sleep(ms) {
+    return new Promise(r => setTimeout(r, ms));
   }
 
-  function attachObserver() {
-    if (observer) observer.disconnect();
-    if (!document.body) {
-      console.log('[hister-capture] attachObserver: no document.body, retry in 50ms');
-      setTimeout(attachObserver, 50);
-      return;
-    }
-    observedBody = document.body;
-    observer = new MutationObserver(() => {
-      // F12: re-attach if document.body was replaced by SPA navigation.
-      if (document.body !== observedBody) {
-        console.log('[hister-capture] body replaced, re-attaching');
-        attachObserver();
-        return;
+  /**
+   * Manual capture: progressive scroll-march to materialize all messages,
+   * then extract + dispatch. Stops when DOM message count stops growing
+   * for SCROLL_NO_GROW_LIMIT consecutive steps, or after SCROLL_MAX_STEPS.
+   * Restores the user's scroll position when done.
+   */
+  async function materializeAndCapture() {
+    console.log('[hister-capture] materializeAndCapture: starting scroll-march');
+    const savedScrollY = window.scrollY;
+    let lastTotal = document.querySelectorAll(SELECTOR).length;
+    let noGrowSteps = 0;
+
+    // Start from top so we materialize messages in order.
+    window.scrollTo(0, 0);
+    await sleep(SCROLL_STEP_PAUSE_MS * 2);
+
+    for (let step = 0; step < SCROLL_MAX_STEPS; step++) {
+      window.scrollTo(0, document.body.scrollHeight);
+      await sleep(SCROLL_STEP_PAUSE_MS);
+      const curTotal = document.querySelectorAll(SELECTOR).length;
+      if (curTotal > lastTotal) {
+        noGrowSteps = 0;
+        lastTotal = curTotal;
+      } else {
+        noGrowSteps++;
+        if (noGrowSteps >= SCROLL_NO_GROW_LIMIT) break;
       }
-      scheduleCapture('mutation');
-    });
-    observer.observe(document.body, { childList: true, subtree: true, characterData: true });
-    console.log('[hister-capture] observer attached to document.body');
+    }
+
+    console.log('[hister-capture] materializeAndCapture: settled at totalNodes=' + lastTotal);
+
+    await dispatchCapture('manual');
+
+    // Restore the user's scroll position so we don't yank them around.
+    window.scrollTo(0, savedScrollY);
   }
 
+  // Listen for manual trigger from popup.
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (!msg || typeof msg !== 'object') return false;
+    if (msg.type === 'MATERIALIZE_AND_CAPTURE') {
+      materializeAndCapture()
+        .then(() => sendResponse({ ok: true }))
+        .catch(err => sendResponse({ ok: false, error: err && err.message || String(err) }));
+      return true; // async response
+    }
+    return false;
+  });
+
+  /**
+   * v0.2 capture strategy:
+   *   - No MutationObserver-driven capture. Scroll-induced materialization
+   *     on long threads was causing intermediate-state overwrites.
+   *   - Single initial settle capture (best-effort, may be partial).
+   *   - Manual capture via popup button forces full scroll-march.
+   */
   function init() {
     console.log('[hister-capture] init on', location.href);
-    attachObserver();
-    // Initial settle capture (covers page load before any MO tick).
-    scheduleCapture('initial');
+    if (!autoCaptureDone) {
+      autoCaptureDone = true;
+      // Best-effort initial capture; user can force full via popup.
+      dispatchCapture('initial');
+    }
   }
 
   if (document.readyState === 'loading') {

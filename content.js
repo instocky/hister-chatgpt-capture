@@ -31,16 +31,25 @@
    */
   function extractOnce() {
     const nodes = document.querySelectorAll(SELECTOR);
-    if (!nodes || nodes.length === 0) return null;
+    const totalNodes = nodes ? nodes.length : 0;
+    if (!nodes || totalNodes === 0) {
+      console.log('[hister-capture] extractOnce: 0 nodes for selector', SELECTOR);
+      return null;
+    }
 
     const messages = [];
+    let skippedRole = 0;
+    let skippedEmpty = 0;
     for (const el of nodes) {
       const role = el.getAttribute('data-message-author-role');
-      if (role !== ROLE_USER && role !== ROLE_ASSISTANT) continue;
+      if (role !== ROLE_USER && role !== ROLE_ASSISTANT) { skippedRole++; continue; }
       const text = el.innerText.trim();
-      if (text.length === 0) continue;
+      if (text.length === 0) { skippedEmpty++; continue; }
       messages.push({ role, text });
     }
+    console.log('[hister-capture] extractOnce:', {
+      totalNodes, kept: messages.length, skippedRole, skippedEmpty,
+    });
     if (messages.length === 0) return null;
 
     const text = messages
@@ -70,7 +79,10 @@
 
   async function dispatchCapture(reason) {
     const ext = extractOnce();
-    if (!ext) return;
+    if (!ext) {
+      console.log('[hister-capture] dispatchCapture: no extractable messages, skip (reason=' + reason + ')');
+      return;
+    }
 
     // F6: hash source = messages[].text from F4. Never re-extracts.
     const hashInput = ext.messages.map(m => `${m.role}:${m.text}`).join('\n---\n');
@@ -92,11 +104,16 @@
       reason,
     };
 
+    console.log('[hister-capture] dispatchCapture: sending', {
+      reason, url: payload.url, messageCount: payload.messageCount, hash: hash.slice(0, 12) + '…',
+    });
+
     try {
-      await chrome.runtime.sendMessage(payload);
+      const res = await chrome.runtime.sendMessage(payload);
+      console.log('[hister-capture] dispatchCapture: SW response', res);
     } catch (err) {
       // SW may be inactive or unload mid-send. Next MO tick will re-fire.
-      console.debug('[hister-capture] sendMessage failed:', err && err.message);
+      console.log('[hister-capture] sendMessage failed:', err && err.message);
     }
   }
 
@@ -113,6 +130,7 @@
   function attachObserver() {
     if (observer) observer.disconnect();
     if (!document.body) {
+      console.log('[hister-capture] attachObserver: no document.body, retry in 50ms');
       setTimeout(attachObserver, 50);
       return;
     }
@@ -120,15 +138,18 @@
     observer = new MutationObserver(() => {
       // F12: re-attach if document.body was replaced by SPA navigation.
       if (document.body !== observedBody) {
+        console.log('[hister-capture] body replaced, re-attaching');
         attachObserver();
         return;
       }
       scheduleCapture('mutation');
     });
     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    console.log('[hister-capture] observer attached to document.body');
   }
 
   function init() {
+    console.log('[hister-capture] init on', location.href);
     attachObserver();
     // Initial settle capture (covers page load before any MO tick).
     scheduleCapture('initial');

@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Hister Capture</title>
+  <style>
+    body {
+      font: 13px/1.4 -apple-system, "Segoe UI", sans-serif;
+      min-width: 300px;
+      margin: 0;
+      padding: 12px;
+      color: #222;
+    }
+    h1 { font-size: 14px; margin: 0 0 8px; }
+    .row {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 4px 0;
+      border-top: 1px solid #eee;
+    }
+    .row:first-of-type { border-top: 0; }
+    .label { color: #666; flex-shrink: 0; }
+    .val {
+      font-family: ui-monospace, "Consolas", monospace;
+      text-align: right;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .state-OK { color: #2a7; font-weight: 600; }
+    .state-ERR { color: #d33; font-weight: 600; }
+    .state-capturing { color: #c80; font-weight: 600; }
+    .state-idle { color: #888; }
+    .hint { color: #888; margin-top: 8px; font-size: 11px; }
+    code { background: #f4f4f4; padding: 1px 4px; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <h1>Hister ChatGPT Capture</h1>
+  <div id="root">loading…</div>
+  <script src="popup.js"></script>
+</body>
+</html>

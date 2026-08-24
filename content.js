@@ -27,9 +27,9 @@
   const ROLE_USER = 'user';
   const ROLE_ASSISTANT = 'assistant';
 
-  const SCROLL_STEP_PAUSE_MS = 200;
-  const SCROLL_MAX_STEPS = 50;
-  const SCROLL_NO_GROW_LIMIT = 3;
+  const SCROLL_STEP_PAUSE_MS = 400;
+  const SCROLL_MAX_STEPS = 80;
+  const SCROLL_NO_GROW_LIMIT = 4;
 
   let autoCaptureDone = false;
 
@@ -129,6 +129,34 @@
   }
 
   /**
+   * Find the actual scrollable element. ChatGPT (and many SPAs) use a
+   * custom container (e.g. <main>) with overflow:auto, not the window.
+   * window.scrollTo on these pages is a silent no-op.
+   */
+  function findScrollable() {
+    // 1. document.scrollingElement (modern standard; defaults to <html>).
+    const ds = document.scrollingElement;
+    if (ds && ds.scrollHeight > ds.clientHeight + 1) return ds;
+
+    // 2. <main> if present and scrollable.
+    const main = document.querySelector('main');
+    if (main && main.scrollHeight > main.clientHeight + 1) return main;
+
+    // 3. Walk for any element with overflow-y auto/scroll and content overflow.
+    const all = document.querySelectorAll('main, section, div, [role="main"]');
+    for (const el of all) {
+      const cs = getComputedStyle(el);
+      if ((cs.overflowY === 'auto' || cs.overflowY === 'scroll') &&
+          el.scrollHeight > el.clientHeight + 1) {
+        return el;
+      }
+    }
+
+    // 4. Fallback to body.
+    return document.body;
+  }
+
+  /**
    * Manual capture: progressive scroll-march to materialize all messages,
    * then extract + dispatch. Stops when DOM message count stops growing
    * for SCROLL_NO_GROW_LIMIT consecutive steps, or after SCROLL_MAX_STEPS.
@@ -136,16 +164,26 @@
    */
   async function materializeAndCapture() {
     console.log('[hister-capture] materializeAndCapture: starting scroll-march');
-    const savedScrollY = window.scrollY;
+    const scroller = findScrollable();
+    const savedScrollTop = scroller.scrollTop;
+    console.log('[hister-capture] scrollable:', scroller.tagName, 'scrollHeight=' + scroller.scrollHeight, 'clientHeight=' + scroller.clientHeight);
+
     let lastTotal = document.querySelectorAll(SELECTOR).length;
     let noGrowSteps = 0;
 
     // Start from top so we materialize messages in order.
-    window.scrollTo(0, 0);
+    scroller.scrollTop = 0;
     await sleep(SCROLL_STEP_PAUSE_MS * 2);
 
     for (let step = 0; step < SCROLL_MAX_STEPS; step++) {
-      window.scrollTo(0, document.body.scrollHeight);
+      // Scroll to bottom of the scrollable container.
+      scroller.scrollTop = scroller.scrollHeight;
+      // Also scrollIntoView on the last known message — belt and suspenders
+      // in case scrollTop is clamped by chatgpt's virtualizer.
+      const nodes = document.querySelectorAll(SELECTOR);
+      if (nodes.length > 0) {
+        try { nodes[nodes.length - 1].scrollIntoView({ block: 'end' }); } catch (_) {}
+      }
       await sleep(SCROLL_STEP_PAUSE_MS);
       const curTotal = document.querySelectorAll(SELECTOR).length;
       if (curTotal > lastTotal) {
@@ -162,7 +200,7 @@
     await dispatchCapture('manual');
 
     // Restore the user's scroll position so we don't yank them around.
-    window.scrollTo(0, savedScrollY);
+    scroller.scrollTop = savedScrollTop;
   }
 
   // Listen for manual trigger from popup.

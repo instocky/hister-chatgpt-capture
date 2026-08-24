@@ -19,8 +19,8 @@
     "service_worker": "service_worker.js"
   },
 
-  "declarativeNetRequest": {
-    "ruleResources": [
+  "declarative_net_request": {
+    "rule_resources": [
       {
         "id": "hister-csrf-bypass",
         "enabled": true,

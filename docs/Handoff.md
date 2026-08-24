@@ -161,17 +161,13 @@ one thread URL = one Hister document.
 
 ## Timing
 
-MutationObserver watches DOM.
+**v0.2 — manual trigger, not MutationObserver.**
 
-After relevant mutation:
-- debounce 3 seconds
-- extract
-- hash
-- POST only if hash changed
+- **No MO-driven capture.** chatgpt.com virtualizes the thread; the DOM only contains the current buffer window (~14-15 messages). MO would fire on every scroll-induced DOM change, re-hash, and re-POST, overwriting Hister with intermediate state. Removed in commit `fceec9d`.
+- **Single-shot initial capture** on page load (best-effort, may be partial).
+- **Manual capture** via the popup "Capture this thread" button. Snapshots whatever messages are currently mounted in the DOM at click time. User is expected to scroll the thread to the position they want to capture first.
 
-v1 is settled-thread capture.
-
-No token-by-token streaming.
+Capture is settled-thread at the moment the user clicks; no token-by-token streaming.
 
 ## Retry
 
@@ -312,9 +308,8 @@ Do not reopen settled architectural decisions without new evidence.
 
 ## Current blocker
 
-No architectural blocker.
+No architectural blocker for the v1 scope (snapshot-of-DOM capture).
 
-Implementation is gated only by:
-1. innerText spike
-2. long-thread spike
-3. label-preservation test
+**Known v1 limit (documented inline in `content.js` and in dnote #22):** Cannot capture the full thread on a long ChatGPT conversation (>14-15 messages). chatgpt.com virtualizes the thread; the DOM only contains the current buffer window. Scroll does not materialize additional messages — verified by manual probe (dnote #22, section 5). Three scroll-march attempts were made and reverted (commits `5ccee76`, `ac00500`, reverted in `d22ed9c`); none grew the union.
+
+**Path to full-thread capture (v2, not v1):** main-world content script injection (`world: "MAIN"`) to read chatgpt's internal Recoil/Redux state directly. Bypasses the virtualizer entirely but requires knowledge of chatgpt's state shape (will break on chatgpt updates).

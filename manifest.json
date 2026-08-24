@@ -6,7 +6,8 @@
   "minimum_chrome_version": "120",
 
   "permissions": [
-    "storage"
+    "storage",
+    "declarativeNetRequest"
   ],
 
   "host_permissions": [
@@ -16,6 +17,16 @@
 
   "background": {
     "service_worker": "service_worker.js"
+  },
+
+  "declarativeNetRequest": {
+    "ruleResources": [
+      {
+        "id": "hister-csrf-bypass",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
   },
 
   "content_scripts": [

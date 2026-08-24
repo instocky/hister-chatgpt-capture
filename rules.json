@@ -1,0 +1,21 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "requestHeaders": [
+        {
+          "header": "origin",
+          "operation": "set",
+          "value": "hister://"
+        }
+      ]
+    },
+    "condition": {
+      "urlFilter": "||127.0.0.1:4433",
+      "requestMethods": ["post", "put", "delete", "patch"],
+      "resourceTypes": ["xmlhttprequest", "other"]
+    }
+  }
+]

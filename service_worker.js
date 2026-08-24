@@ -14,7 +14,7 @@
 (() => {
   'use strict';
 
-  const HISER_ADD_URL = 'http://127.0.0.1:4433/api/add';
+  const HISTER_ADD_URL = 'http://127.0.0.1:4433/api/add';
   const MAX_RETRIES = 3;
   const RETRY_BACKOFF_MS = 2000;
 

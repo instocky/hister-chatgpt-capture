@@ -164,41 +164,67 @@
    * then extract + dispatch. Stops when DOM message count stops growing
    * for SCROLL_NO_GROW_LIMIT consecutive steps, or after SCROLL_MAX_STEPS.
    * Restores the user's scroll position when done.
+   *
+   * chatgpt.com virtualizes the thread: only the messages in the
+   * current viewport (+ small buffer) are in the DOM. An instant
+   * `scrollTop = scrollHeight` jumps the container but does NOT
+   * trigger chatgpt's progressive render — DOM stays at ~6-10 nodes.
+   * We must scroll one viewport at a time AND call scrollIntoView on
+   * each newly-discovered message to force chatgpt to render it.
    */
   async function materializeAndCapture() {
     console.log('[hister-capture] materializeAndCapture: starting scroll-march');
     const scroller = findScrollable();
     const savedScrollTop = scroller.scrollTop;
-    console.log('[hister-capture] scrollable:', scroller.tagName, 'scrollHeight=' + scroller.scrollHeight, 'clientHeight=' + scroller.clientHeight);
-
-    let lastTotal = document.querySelectorAll(SELECTOR).length;
-    let noGrowSteps = 0;
+    const stepPx = Math.max(scroller.clientHeight - 100, 400);
+    console.log('[hister-capture] scrollable:', scroller.tagName, 'scrollHeight=' + scroller.scrollHeight, 'clientHeight=' + scroller.clientHeight, 'stepPx=' + stepPx);
 
     // Start from top so we materialize messages in order.
     scroller.scrollTop = 0;
-    await sleep(SCROLL_STEP_PAUSE_MS * 2);
+    await sleep(SCROLL_STEP_PAUSE_MS);
+
+    const seen = new Set(); // text-hash of messages already in DOM at any point
+    let lastTotal = document.querySelectorAll(SELECTOR).length;
+    for (const el of document.querySelectorAll(SELECTOR)) seen.add(el.innerText.trim().slice(0, 200));
+
+    let noGrowSteps = 0;
 
     for (let step = 0; step < SCROLL_MAX_STEPS; step++) {
-      // Scroll to bottom of the scrollable container.
-      scroller.scrollTop = scroller.scrollHeight;
-      // Also scrollIntoView on the last known message — belt and suspenders
-      // in case scrollTop is clamped by chatgpt's virtualizer.
+      // Scroll one viewport down.
+      scroller.scrollTop = Math.min(scroller.scrollTop + stepPx, scroller.scrollHeight);
+      await sleep(SCROLL_STEP_PAUSE_MS / 2);
+
+      // Force-render every newly-discovered message via scrollIntoView.
+      // chatgpt's virtualizer mounts messages on IntersectionObserver
+      // events; scrollIntoView is what triggers that in our context.
       const nodes = document.querySelectorAll(SELECTOR);
-      if (nodes.length > 0) {
-        try { nodes[nodes.length - 1].scrollIntoView({ block: 'end' }); } catch (_) {}
+      for (const el of nodes) {
+        const key = el.innerText.trim().slice(0, 200);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        try { el.scrollIntoView({ block: 'center' }); } catch (_) {}
+        await sleep(20);
       }
+
+      // Try the simple bottom jump too, then wait.
+      scroller.scrollTop = scroller.scrollHeight;
       await sleep(SCROLL_STEP_PAUSE_MS);
+
       const curTotal = document.querySelectorAll(SELECTOR).length;
-      if (curTotal > lastTotal) {
-        noGrowSteps = 0;
-        lastTotal = curTotal;
-      } else {
+      const newSeen = curTotal !== lastTotal;
+      lastTotal = curTotal;
+
+      // Done if we've hit the bottom and no new nodes appear.
+      const atBottom = scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2;
+      if (atBottom && !newSeen) {
         noGrowSteps++;
         if (noGrowSteps >= SCROLL_NO_GROW_LIMIT) break;
+      } else {
+        noGrowSteps = 0;
       }
     }
 
-    console.log('[hister-capture] materializeAndCapture: settled at totalNodes=' + lastTotal);
+    console.log('[hister-capture] materializeAndCapture: settled at totalNodes=' + lastTotal + ' (seen unique=' + seen.size + ')');
 
     await dispatchCapture('manual');
 

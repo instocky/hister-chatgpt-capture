@@ -161,13 +161,17 @@ one thread URL = one Hister document.
 
 ## Timing
 
-**v0.2 — manual trigger, not MutationObserver.**
+**v0.3 — manual trigger (full-thread scroll-march), not MutationObserver.**
 
 - **No MO-driven capture.** chatgpt.com virtualizes the thread; the DOM only contains the current buffer window (~14-15 messages). MO would fire on every scroll-induced DOM change, re-hash, and re-POST, overwriting Hister with intermediate state. Removed in commit `fceec9d`.
-- **Single-shot initial capture** on page load (best-effort, may be partial).
-- **Manual capture** via the popup "Capture this thread" button. Snapshots whatever messages are currently mounted in the DOM at click time. User is expected to scroll the thread to the position they want to capture first.
+- **No auto-capture on page load.** Saving is manual-only. A partial top-window snapshot would produce a different hash than a full capture and overwrite the canonical doc on reload. v0.3 removed the initial single-shot capture.
+- **Manual capture = full scroll-march** via the popup "Capture this thread" button. The button runs the proven Phase 2.0 algorithm (ported from `c:\Projects\Common\0824\phases.md`): scroll TOP→BOTTOM stepwise, capture each DOM window, dedup by fingerprint `SHA256(role + text + attachments)`, then sort globally by Y. Restores the user's scroll position afterwards.
 
-Capture is settled-thread at the moment the user clicks; no token-by-token streaming.
+Full-thread capture works in v1. `c:\Projects\Common\0824\report_20260824-chatgpt-dom.md` proved it on a real 56-message thread (9 image attachments). Earlier `window.scrollTo`/instant-`scrollTop`/`scrollIntoView` attempts (dnote #22, commits `5ccee76`/`ac00500`/`d22ed9c`) failed because they did not walk intermediate windows or missed the real scroll container — the Phase 2.0 algorithm solves both by finding the scroller (incl. `[data-scroll-root]`) and stepping through every window with stability checks.
+
+Identity is deliberately `role + text + attachments` (Y is ORDER ONLY — a message can have multiple DOM representations with slightly different Y). Attachments are used only for identity/dedup; Hister text stays `[USER]/[ASSISTANT]` (+ no image/file extraction, per PRD non-goals).
+
+Capture runs at the moment the user clicks; no token-by-token streaming.
 
 ## Retry
 
@@ -306,10 +310,12 @@ This HANDOFF explains implementation context and verified assumptions.
 
 Do not reopen settled architectural decisions without new evidence.
 
-## Current blocker
+## Current status
 
-No architectural blocker for the v1 scope (snapshot-of-DOM capture).
+No architectural blocker for the v1 scope. **Full-thread capture now works in v1** via the Phase 2.0 scroll-march algorithm (see `c:\Projects\Common\0824\report_20260824-chatgpt-dom.md` + `phases.md`), ported into `content.js` (v0.3). A real 56-message thread was reconstructed from the DOM (9 image attachments); order verified visually.
 
-**Known v1 limit (documented inline in `content.js` and in dnote #22):** Cannot capture the full thread on a long ChatGPT conversation (>14-15 messages). chatgpt.com virtualizes the thread; the DOM only contains the current buffer window. Scroll does not materialize additional messages — verified by manual probe (dnote #22, section 5). Three scroll-march attempts were made and reverted (commits `5ccee76`, `ac00500`, reverted in `d22ed9c`); none grew the union.
+Earlier conclusion that "scroll-march does not grow the union" (dnote #22, and the old v0.2 snapshot-only strategy) is **superseded**: the failures came from not walking intermediate windows or from missing the real scroll container. The Phase 2.0 algorithm finds the scroller (incl. `[data-scroll-root]`) and steps through every DOM window with stability checks, de-duplicating by `SHA256(role + text + attachments)` and ordering by Y.
 
-**Path to full-thread capture (v2, not v1):** main-world content script injection (`world: "MAIN"`) to read chatgpt's internal Recoil/Redux state directly. Bypasses the virtualizer entirely but requires knowledge of chatgpt's state shape (will break on chatgpt updates).
+**Known v1 limit (de-scoped):** real long-thread regression test with known N ≥ 50 isn't available in dev inventory (Gate 2 still NOT VERIFIED), though the algorithm was validated on a 56-message real thread. Attachments (images/files) are detected for stable identity but not stored in Hister (PRD non-goals).
+
+**Open (v2, not v1):** main-world content script injection (`world: "MAIN"`) to read chatgpt's internal Recoil/Redux state — a more robust/instant alternative that bypasses the virtualizer entirely, but requires knowledge of chatgpt's state shape (will break on chatgpt updates). Not needed for v1.

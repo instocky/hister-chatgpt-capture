@@ -30,10 +30,17 @@
     }
     .state-OK { color: #2a7; font-weight: 600; }
     .state-ERR { color: #d33; font-weight: 600; }
-    .state-capturing { color: #c80; font-weight: 600; }
     .state-idle { color: #888; }
     .hint { color: #888; margin-top: 8px; font-size: 11px; }
     code { background: #f4f4f4; padding: 1px 4px; border-radius: 3px; }
+    kbd {
+      background: #f4f4f4;
+      border: 1px solid #ccc;
+      border-bottom-width: 2px;
+      border-radius: 3px;
+      padding: 1px 5px;
+      font: 11px ui-monospace, Consolas, monospace;
+    }
     button {
       width: 100%;
       margin-top: 10px;
@@ -48,14 +55,15 @@
     }
     button:hover { background: #1a5; }
     button:disabled { background: #aaa; cursor: default; }
-    .btn-err { background: #c80; }
-    .btn-err:hover { background: #a60; }
+    .btn-err { background: #d33; }
+    .btn-err:hover { background: #a22; }
   </style>
 </head>
 <body>
   <h1>Hister ChatGPT Capture</h1>
   <div id="root">loading…</div>
-  <button id="capture-btn" type="button">Capture this thread (full scroll-march)</button>
+  <button id="save-btn" type="button">Save thread to clipboard</button>
+  <div class="hint">Hotkey: <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd></div>
   <script src="popup.js"></script>
 </body>
 </html>

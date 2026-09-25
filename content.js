@@ -1,27 +1,28 @@
 // content.js — runs at document_idle on chatgpt.com/c/*
 //
-// Responsibilities (per docs/PRD-chatgpt-ext.md F1-F14, docs/Handoff.md):
+// Responsibilities (v0.6 — clipboard-only, Hister sink removed):
 //   - DOM extraction via [data-message-author-role]
 //   - full-thread capture via proven Phase 2.0 scroll-march algorithm
 //     (see c:\Projects\Common\0824\phases.md PHASE 2.0 + report):
 //       TOP -> capture -> scroll -> capture -> dedup by fingerprint -> BOTTOM -> sort by Y
-//   - chrome.runtime.sendMessage to service_worker.js
-//   - manual capture only, triggered by popup button click
+//   - Markdown building from extracted messages
+//   - chrome.runtime.onMessage handler for popup path (EXTRACT) and hotkey path
+//     (EXTRACT_WRITE_TOAST) and toast rendering (TOAST)
+//   - manual capture only, triggered by popup button OR hotkey Alt+Shift+C
 //
-// v0.3 — capture strategy:
-//   - Saving is MANUAL ONLY (popup "Capture this thread" button). No MutationObserver,
-//     no auto-capture on load (auto snapshot of the top window would produce a partial
-//     hash that differs from a full capture and overwrite the canonical Hister doc on
-//     reload; the proven algorithm captures the WHOLE thread, so hashes are stable).
-//   - The button runs the full scroll-march from the dev-console probe (Phase 2.0):
-//     it walks TOP->BOTTOM with a stepwise scroll, capturing each DOM window, de-dups
-//     by fingerprint (SHA256 of role + text + attachments), then orders by Y.
-//   - Identities: role + text + attachments (Y is ORDER ONLY — a message can have
-//     multiple DOM representations with slightly different Y).
+// v0.3 → v0.6 carry-over:
+//   - extraction strategy UNCHANGED (Phase 2.0 scroll-march, single-flight guard,
+//     innerText capture, Y-based visual order, fingerprint dedup, restore scroll).
+//   - extraction → hashing pipeline is irrelevant in v0.6 (no hash, no dedup);
+//     messages[] is built once and consumed directly by buildMarkdown().
 //
-// Hard rules:
-//   - NO network calls. NO storage. NO Origin header (MV3 forbids; Chrome sets it).
-//   - url = location.origin + location.pathname (F13), trailing slash stripped.
+// v0.6 hard rules:
+//   - NO network calls. NO storage. NO Chrome declarativeNetRequest.
+//   - writeText in content script context requires host document to be focused
+//     (only true at hotkey-press time, NOT when popup is open). Popup-button
+//     path has popup.js do the writeText itself.
+//   - url = location.origin + location.pathname, trailing slash stripped (kept
+//     for logging / future use).
 
 (() => {
   'use strict';
@@ -50,7 +51,7 @@
 
   const cleanText = (text) => (text || '').replace(/\s+/g, ' ').trim();
 
-  /** SHA-256 hex via Web Crypto. */
+  /** SHA-256 hex via Web Crypto. (Kept for future fingerprint-based dedup; unused in v0.6.) */
   async function sha256Hex(input) {
     const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
     return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -113,7 +114,9 @@
 
   // ------------------------------------------------------------------
   // ATTACHMENTS — forensic extraction used ONLY for identity/dedup.
-  // Hister text stays role+text (PRD non-goals: no image/file extraction).
+  // v0.6 does not include attachments in the markdown output (PRD
+  // non-goals: no image/file extraction). Functions retained in case
+  // v0.7 wants them back in the toast preview.
   // ------------------------------------------------------------------
   function extractAttachmentId(value) {
     if (!value) return null;
@@ -130,7 +133,6 @@
     const result = [];
     for (const img of messageNode.querySelectorAll('img')) {
       const geometry = getGeometry(img);
-      // Skip tiny UI icons (avatars, decorations). Keep real images.
       if (geometry.width < 40 && geometry.height < 40) continue;
       const src = img.getAttribute('src') || null;
       const alt = cleanText(img.getAttribute('alt') || '') || null;
@@ -158,7 +160,7 @@
     const selectors = ['[data-file-name]', '[data-file-type]'];
     for (const selector of selectors) {
       for (const el of messageNode.querySelectorAll(selector)) {
-        if (el.matches('a[download]')) continue; // already captured above
+        if (el.matches('a[download]')) continue;
         const filename =
           el.getAttribute('data-file-name') ||
           el.getAttribute('data-filename') ||
@@ -217,7 +219,6 @@
     for (let domIndex = 0; domIndex < nodes.length; domIndex++) {
       const el = nodes[domIndex];
       const role = el.getAttribute('data-message-author-role');
-      // role is expected to be 'user'/'assistant'. Keep only those.
       if (role !== 'user' && role !== 'assistant') continue;
       const text = cleanText(el.innerText);
       if (!text) continue; // empty nodes are filtered (A5)
@@ -227,7 +228,6 @@
       const height = +rect.height.toFixed(2);
       const attachments = extractAttachments(el);
 
-      // IDENTITY — Y is NOT part of it. Attachments ARE.
       const attachmentIdentity = attachments
         .map((a) => JSON.stringify({ type: a.type, id: a.id, src: a.src, href: a.href, filename: a.filename }))
         .join('|');
@@ -236,7 +236,6 @@
       result.push({ fingerprint, y, height, bottom: +(y + height).toFixed(2), role, text, attachments, domIndex });
     }
 
-    // Visual order: Y ascending, ties broken by DOM order.
     result.sort((a, b) => {
       const delta = a.y - b.y;
       if (Math.abs(delta) > CFG.yTolerancePx) return delta;
@@ -270,7 +269,6 @@
 
   // ------------------------------------------------------------------
   // GLOBAL UNIQUE MESSAGE MAP — de-dup across windows.
-  // Keeps min Y and the richest attachment representation.
   // ------------------------------------------------------------------
   function makeMerger() {
     const uniqueMap = new Map();
@@ -304,7 +302,6 @@
 
   // ------------------------------------------------------------------
   // FULL THREAD CAPTURE — proven Phase 2.0 scroll-march.
-  // Returns the ordered message array (Y ascending) or null on failure.
   // ------------------------------------------------------------------
   async function captureFullThread() {
     scroller = findScroller();
@@ -317,7 +314,6 @@
     console.log('[hister-capture] scroll-march start; scroller SC=' + scroller.scrollHeight +
       ' CH=' + scroller.clientHeight);
 
-    // PHASE A — TOP: scroll to 0 and wait for a stable window.
     let topReady = false;
     for (let attempt = 0; attempt < CFG.maxTopAttempts; attempt++) {
       scroller.scrollTop = 0;
@@ -337,7 +333,6 @@
       merge(await captureMessages(), 0);
     }
 
-    // PHASE B — TOP -> BOTTOM, stepwise scroll.
     let noMoveSteps = 0;
     for (let step = 1; step <= CFG.maxSteps; step++) {
       const beforeTop = scroller.scrollTop;
@@ -364,61 +359,30 @@
       }
     }
 
-    // FINAL CAPTURE — settle, one more window at BOTTOM.
     await sleep(CFG.settleMs);
     merge(await captureMessages(), 'final');
 
-    // Final order: ONLY now Y is used.
     const messages = [...uniqueMap.values()].sort((a, b) => a.y - b.y);
     console.log('[hister-capture] scroll-march done; unique=' + messages.length);
     return messages;
   }
 
-  // Build flattened [USER]/[ASSISTANT] text in visual order.
-  function flattenText(messages) {
-    return messages.map((m) => `[${m.role.toUpperCase()}] ${m.text}`).join('\n');
+  // ------------------------------------------------------------------
+  // MARKDOWN BUILDER (v0.6).
+  //   **User:** / **Assistant:** with --- separator.
+  //   innerText is preserved verbatim — ChatGPT already renders markdown
+  //   source (with ```lang code fences, inline `code`, **bold**, etc.)
+  //   as visible text, so no extra markdown rendering is needed here.
+  // ------------------------------------------------------------------
+  function buildMarkdown(messages) {
+    return messages
+      .map((m) => `**${m.role[0].toUpperCase()}${m.role.slice(1)}:**\n\n${m.text}`)
+      .join('\n\n---\n\n')
+      + '\n';
   }
 
-  async function dispatchCapture(messages, reason) {
-    if (!messages || messages.length === 0) {
-      console.log('[hister-capture] dispatchCapture: no messages, skip (reason=' + reason + ')');
-      return;
-    }
-
-    const text = flattenText(messages);
-    const hashInput = messages.map((m) => `${m.role}:${m.text}`).join('\n---\n');
-    const hash = await sha256Hex(hashInput);
-
-    const payload = {
-      type: 'CHATGPT_CAPTURE',
-      url: canonicalUrl(),
-      title: document.title,
-      text,
-      label: 'chatgpt',
-      metadata: {
-        source: 'chatgpt',
-        conversation_id: conversationId(),
-        message_count: messages.length,
-      },
-      hash,
-      messageCount: messages.length,
-      reason,
-    };
-
-    console.log('[hister-capture] dispatchCapture: sending', {
-      reason, url: payload.url, messageCount: payload.messageCount, hash: hash.slice(0, 12) + '…',
-    });
-
-    try {
-      const res = await chrome.runtime.sendMessage(payload);
-      console.log('[hister-capture] dispatchCapture: SW response', res);
-    } catch (err) {
-      console.log('[hister-capture] sendMessage failed:', err && err.message);
-    }
-  }
-
-  // Manual capture: full scroll-march, then dispatch. Restores scroll position.
-  async function materializeAndCapture() {
+  // Manual capture: full scroll-march, return markdown. Restores scroll position.
+  async function materializeAndReturnMarkdown() {
     if (captureInProgress) {
       console.log('[hister-capture] capture already in progress, ignoring');
       return { ok: true, skipped: true, reason: 'in-progress' };
@@ -427,36 +391,111 @@
     try {
       const originalScrollTop = scroller ? scroller.scrollTop : null;
       const messages = await captureFullThread();
-      if (messages) {
-        // Restore the user's scroll position now that data is extracted.
-        if (scroller && originalScrollTop != null) {
-          try { scroller.scrollTop = originalScrollTop; } catch (_) { /* ignore */ }
-        }
-        await dispatchCapture(messages, 'manual');
+      // Restore the user's scroll position now that data is extracted.
+      if (scroller && originalScrollTop != null) {
+        try { scroller.scrollTop = originalScrollTop; } catch (_) { /* ignore */ }
       }
-      return { ok: true, messageCount: messages ? messages.length : 0 };
+      if (!messages || messages.length === 0) {
+        return { ok: false, error: 'no-messages', messageCount: 0 };
+      }
+      const md = buildMarkdown(messages);
+      return { ok: true, md, chars: md.length, messageCount: messages.length };
     } finally {
       captureInProgress = false;
     }
   }
 
-  // Listen for manual trigger from popup.
-  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // ------------------------------------------------------------------
+  // IN-PAGE TOAST — bottom-right, 2.5s auto-fade, no click.
+  // Mirrors prod spec (v0.6 §Toast).
+  // ------------------------------------------------------------------
+  function showToast(text, kind = 'ok') {
+    const el = document.createElement('div');
+    el.dataset.histerCaptureToast = '1';
+    el.textContent = text;
+    el.style.cssText = [
+      'position: fixed',
+      'bottom: 20px',
+      'right: 20px',
+      'padding: 12px 20px',
+      'background: ' + (kind === 'err' ? '#d33' : '#2a7'),
+      'color: #fff',
+      'font: 600 14px/1.4 -apple-system, "Segoe UI", sans-serif',
+      'border-radius: 6px',
+      'box-shadow: 0 4px 12px rgba(0,0,0,0.25)',
+      'z-index: 2147483647',
+      'opacity: 0',
+      'transform: translateY(8px)',
+      'transition: opacity 200ms ease, transform 200ms ease',
+      'pointer-events: none',
+      'max-width: 320px',
+    ].join(';');
+    document.body.appendChild(el);
+    requestAnimationFrame(() => {
+      el.style.opacity = '1';
+      el.style.transform = 'translateY(0)';
+    });
+    setTimeout(() => {
+      el.style.opacity = '0';
+      el.style.transform = 'translateY(8px)';
+      setTimeout(() => el.remove(), 250);
+    }, 2500);
+  }
+
+  // ------------------------------------------------------------------
+  // MESSAGE ROUTING
+  //   EXTRACT              → popup button: return markdown, popup writes.
+  //   EXTRACT_WRITE_TOAST  → hotkey: do everything in content script
+  //                          (chatgpt tab is focused at hotkey time, so
+  //                          writeText document-focus check passes).
+  //   TOAST                → popup tells us to show the post-write overlay.
+  // ------------------------------------------------------------------
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (!msg || typeof msg !== 'object') return false;
-    if (msg.type === 'MATERIALIZE_AND_CAPTURE') {
-      materializeAndCapture()
-        .then((res) => sendResponse(res || { ok: true }))
+
+    if (msg.type === 'EXTRACT') {
+      materializeAndReturnMarkdown()
+        .then(sendResponse)
         .catch((err) => sendResponse({ ok: false, error: err && err.message || String(err) }));
-      return true; // async response
+      return true;
     }
+
+    if (msg.type === 'EXTRACT_WRITE_TOAST') {
+      (async () => {
+        try {
+          const r = await materializeAndReturnMarkdown();
+          if (!r || !r.ok) {
+            showToast('Save failed: ' + ((r && r.error) || 'unknown'), 'err');
+            sendResponse({ ok: false, error: (r && r.error) || 'unknown' });
+            return;
+          }
+          await navigator.clipboard.writeText(r.md);
+          showToast(`Saved — ${r.chars} chars`);
+          sendResponse({ ok: true, chars: r.chars, messageCount: r.messageCount, via: 'content-hotkey' });
+        } catch (e) {
+          console.error('[hister-capture] hotkey writeText FAIL', e?.name, e?.message);
+          showToast(`Save failed: ${e?.name || 'unknown'}`, 'err');
+          sendResponse({ ok: false, error: e?.name || 'unknown', message: e?.message || '' });
+        }
+      })();
+      return true;
+    }
+
+    if (msg.type === 'TOAST') {
+      try {
+        showToast(msg.text || '', msg.kind === 'err' ? 'err' : 'ok');
+        sendResponse({ ok: true });
+      } catch (e) {
+        sendResponse({ ok: false, error: String(e?.message || e) });
+      }
+      return false;
+    }
+
     return false;
   });
 
-  // NOTE: no auto-capture on load. Saving is manual-only (by button) so a
-  // full-thread hash is what lands in Hister; a partial top-window snapshot
-  // would produce a different hash and overwrite the canonical doc on reload.
   function init() {
-    console.log('[hister-capture] init on', location.href, '(manual capture via popup button)');
+    console.log('[hister-capture] init on', location.href, '(v0.6 clipboard-only)');
   }
 
   if (document.readyState === 'loading') {

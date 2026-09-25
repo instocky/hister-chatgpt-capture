@@ -1,97 +1,103 @@
 # Hister ChatGPT Capture
 
-Chrome MV3 extension that auto-captures settled ChatGPT conversations into a
-local Hister v0.18.0 instance.
+Chrome MV3 extension that captures settled ChatGPT threads into the system
+clipboard as Markdown.
 
-`chatgpt.com/c/<uuid>` -> structured user/assistant text -> `POST /api/add` ->
-Hister (Bleve FTS + MCP).
+`chatgpt.com/c/<uuid>` → `[data-message-author-role]` scroll-march
+extraction → `**User:**` / `**Assistant:**` Markdown → system clipboard.
 
-The extension is a capture layer. **Hister remains a dumb pipe.**
+Manual capture only: popup button or hotkey `Alt+Shift+C`.
 
 ## Status
 
-PRD v0.5 + Handoff accepted. All 3 pre-impl gates closed (Gate 2 long-thread
-risk explicitly accepted by TL). Implementation is the next phase.
-
-| Gate                                | Verdict           |
-| ----------------------------------- | ----------------- |
-| 1. `innerText` extract-once         | PASS              |
-| 2. long-thread / virtualization     | NOT VERIFIED (TL risk accepted) |
-| 3. label preservation (Hister upsert) | PASS, Outcome A   |
-
-See `docs/Handoff.md` for locked architecture, data model, timing, retry.
-See `docs/PRD-chatgpt-ext.md` for F1-F15 requirements, A1-A11 acceptance tests.
+v0.6 (clipboard-only). The v0.5 Hister POST architecture was scope-cut on
+2026-09-25; see `docs/PRD-chatgpt-ext.md` Appendix E for the dev history and
+rationale. v0.6 spec lives in the same PRD §1-13 with the v0.5 appendices
+(A-D) retained as historical.
 
 ## Repo layout
 
 ```
 .
-├── manifest.json         # MV3 manifest (TODO: implementation phase)
-├── content.js            # DOM extraction, hash, debounce, sendMessage (TODO)
-├── service_worker.js     # fetch POST, retry, storage dedupe (TODO)
-├── popup.html            # minimal status popup (TODO, optional)
+├── manifest.json         # MV3 manifest, clipboardWrite + activeTab + commands
+├── content.js            # scroll-march extraction + Markdown build + toast
+├── service_worker.js     # hotkey relay only (popup talks to content directly)
+├── popup.html            # "Save thread to clipboard" button + status
+├── popup.js              # extract → popup.writeText → toast via content
 ├── README.md             # this file
 ├── .gitignore
 └── docs/
     ├── PRD-chatgpt-ext.md
-    ├── Handoff.md
-    └── spike/
-        ├── chatgpt-dom-probe-innerText.js
-        ├── chatgpt-dom-probe-long-thread.js
-        ├── label-preservation-runbook.md
-        ├── RESULTS/
-        │   ├── innerText.md
-        │   ├── long-thread.md
-        │   └── label-preservation.md
-        └── tmp/          # Gate 3 audit artifacts (run-gate3.ps1, body JSON, step logs)
+    ├── Handoff.md         # archived v0.5 architecture reference
+    └── spike/             # v0.5 pre-impl spike artifacts (historical)
 ```
 
-## Quick start (after implementation lands)
+## Quick start
 
-1. Ensure Hister is running locally: `Get-Process -Name hister`
-2. Open `chrome://extensions/`, enable **Developer mode**
-3. **Load unpacked** -> select this repo root
-4. Open a real settled ChatGPT thread (`chatgpt.com/c/<uuid>`, >= 1 user + 1
-   assistant message)
-5. Wait ~3 s after the last message renders -> ext auto-captures
-6. Verify in Hister WebUI at `http://127.0.0.1:4433` (label: `chatgpt`)
+1. `chrome://extensions/` → enable **Developer mode**
+2. **Load unpacked** → select this repo root
+3. Open a settled ChatGPT thread (`chatgpt.com/c/<uuid>`)
+4. Click the extension icon → **Save thread to clipboard**
+   *or* press **Alt+Shift+C** while the thread tab is focused
+5. Paste anywhere. Format:
+
+   ```markdown
+   **User:**
+
+   message text
+
+   ---
+
+   **Assistant:**
+
+   response text
+
+   ```
 
 ## Hard rules (do not violate)
 
-Full list in `docs/Handoff.md`. Top of mind:
+- **Manual capture only.** No MutationObserver, no auto-settle-detector.
+- **`innerText` once per node.** Single `messages[]` array, Markdown derived
+  from same array. Phase 2.0 scroll-march algorithm unchanged from v0.5.
+- **`activeTab` permission only.** No `<all_urls>`. Content script injects on
+  `*://chatgpt.com/c/*` only.
+- **No network calls.** No Hister, no telemetry, no Origin header (MV3 forbids).
+- **No `chrome.storage`.** Clipboard is the only sink.
+- **Popup-button writeText must be the next `await` after extract result.**
+  Any delay risks popup closing mid-write.
+- **Hotkey writeText needs chatgpt tab focused.** Failure mode: `NotAllowedError:
+  Document is not focused` → content script surfaces an error toast.
+  Documented limitation; offscreen-doc + `document.execCommand` fallback is
+  v0.7 if this becomes a recurring issue.
 
-- **F4 extract-once.** `innerText` called exactly once per node. Hash and
-  flattened text derived from the same `messages[]` array.
-- **F7 debounce 3 s** after the last DOM mutation, hash computed before POST.
-- **F8 POST body** = `{url, title, text, label: "chatgpt", metadata: {...}}`.
-  `Content-Type: application/json; charset=utf-8`. Do NOT set `Origin` header
-  manually (MV3 forbids; Chrome sets `chrome-extension://<id>` automatically).
-- **F10 dedupe** via `chrome.storage.local` keyed by URL: `{hash, updatedAt,
-  messageCount, conversationId}`.
-- **F11 retry** 3x with 2 s backoff, within SW lifetime. No persistent queue
-  in v1 (`chrome.alarms` is v2).
-- **A11 label policy.** Extension always sends `label: "chatgpt"`. Manual
-  Hister WebUI label edits are overwritten on the next recapture (Hister
-  `serveAdd` decodes the entire POST body, including `label`). v1 documented
-  limitation, do not "fix" on the client.
+## Markdown format
 
-## Non-goals (v1)
+- `**User:**` and `**Assistant:**` role labels
+- `---` separator between messages
+- ```lang fenced code blocks preserved as-is from ChatGPT DOM
+- Inline code with single backticks preserved
+- No attachments, no images, no JSON envelope — plaintext only
 
-Streaming capture, attachments, image/file extraction, Obsidian integration,
+## Acceptance tests (informal, manual)
+
+Open a real thread with ≥ 20 messages (mix user/assistant), click save, paste
+into a Markdown editor / Notepad. Verify:
+
+- All messages present, in visual order
+- Role labels intact
+- Code blocks render correctly when pasted into Obsidian / Notion
+- Toast appears bottom-right for ~2.5s with `Saved — N chars`
+- Re-capture overwrites clipboard silently (no delta UX)
+
+## Non-goals (v0.6)
+
+Streaming capture, attachments, image/file extraction, Hister integration,
 Qdrant/Meilisearch, separate SQLite, server-side ChatGPT extractor,
-multi-device sync, historical bulk importer, force-recapture UI.
-
-## Acceptance tests
-
-A1-A10 from PRD must remain unchanged. A11 added in v0.5 (label preservation,
-Outcome A). Run A1-A11 against live Hister on the Cyrillic test thread
-`chatgpt.com/c/6a8bed08-fbc8-83ea-87ad-e45ce7c66320` (reused from Gate 1) and
-a fresh thread with >= 20 messages.
+multi-device sync, historical bulk importer, force-recapture UI, OBS / Notion
+auto-paste.
 
 ## Resuming work
 
-1. Read `docs/Handoff.md` (implementation context, locked decisions).
-2. Read `docs/PRD-chatgpt-ext.md` (F1-F15, A1-A11, DoD in section 13).
-3. Read `docs/spike/RESULTS/innerText.md` (Gate 1 evidence, reuse thread).
-4. Read `docs/spike/RESULTS/label-preservation.md` (Gate 3 evidence, A11).
-5. Implement per locked PRD. No scope changes without TL sign-off.
+1. Read `docs/PRD-chatgpt-ext.md` (v0.6 spec + Appendix E scope-cut rationale)
+2. Read `docs/spike/RESULTS/innerText.md` (extraction evidence, reuse)
+3. No further changes without TL sign-off on the v0.6 contract.

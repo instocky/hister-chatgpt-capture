@@ -1,32 +1,21 @@
 {
   "manifest_version": 3,
   "name": "Hister ChatGPT Capture",
-  "version": "0.1.0",
-  "description": "Auto-captures settled ChatGPT threads into a local Hister instance.",
+  "version": "0.2.0",
+  "description": "Saves settled ChatGPT threads to the clipboard as Markdown.",
   "minimum_chrome_version": "120",
 
   "permissions": [
-    "storage",
-    "declarativeNetRequest"
+    "clipboardWrite",
+    "activeTab"
   ],
 
   "host_permissions": [
-    "*://chatgpt.com/*",
-    "http://127.0.0.1:4433/*"
+    "*://chatgpt.com/*"
   ],
 
   "background": {
     "service_worker": "service_worker.js"
-  },
-
-  "declarative_net_request": {
-    "rule_resources": [
-      {
-        "id": "hister-csrf-bypass",
-        "enabled": true,
-        "path": "rules.json"
-      }
-    ]
   },
 
   "content_scripts": [
@@ -40,5 +29,14 @@
   "action": {
     "default_popup": "popup.html",
     "default_title": "Hister ChatGPT Capture"
+  },
+
+  "commands": {
+    "save-clipboard": {
+      "suggested_key": {
+        "default": "Alt+Shift+C"
+      },
+      "description": "Save the current ChatGPT thread to clipboard as Markdown"
+    }
   }
 }

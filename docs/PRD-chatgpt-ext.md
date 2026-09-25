@@ -1,7 +1,7 @@
 ---
 title: PRD — Hister ChatGPT Capture (MV3 extension)
 status: Draft
-version: 0.5
+version: 0.6
 date: 2026-08-24
 owner: mavis (TL) → dev
 target: C:\Projects\Extantions\20260824_hister-chatgpt-capture
@@ -208,3 +208,77 @@ Q1–Q3 (v0.2) and Q4 (v0.3) all closed. No open questions blocking sign-off.
 
 
 - **Q4 (TL review, #1):** `textContent` vs `innerText` for F4. **H4 spike used `textContent`** (spike/chatgpt-dom-probe.js:21,26,39). TL argues `innerText` better matches visible rendering but requires re-spike to verify (5 min) and adds forced-layout cost on long threads. **Decision: `innerText`.** Re-spike mandatory before implementation; F4/F6 updated to use `innerText` with extraction/hash coherence guard.
+
+---
+
+## Appendix E — v0.5 → v0.6 changelog (scope cut: Hister → clipboard)
+
+**Scope cut decided 2026-09-25.** This is a sibling-branch rewrite, not a regression. All previous appendices (A–D) describe the **archived v0.5 contract** (Hister POST). They remain in this document for dev history only and are NOT the spec for v0.6.
+
+### What changed
+
+- **Sink replaced:** Hister `POST /api/add` → system clipboard via `navigator.clipboard.writeText`. No more network, no more storage, no more dedup hash. The whole Hister-client layer (service_worker retry loop, `chrome.storage.local` dedup, declarative CSRF rule, badge state machine) is gone.
+- **Format:** Markdown with `**User:**` / `**Assistant:**` role labels, `---` separator between messages, ```lang code fences preserved as-is from the ChatGPT DOM. Final plaintext only — no attachments, no JSON envelope.
+- **Triggers:** popup button **and** browser hotkey `Alt+Shift+C` (`commands.save-clipboard`). Both manual-only. The auto-settle-detector that previously lived in `service_worker.js` is removed.
+- **Feedback:** in-page toast overlay, bottom-right, 2.5s auto-fade, no click-to-dismiss. Text: `Saved — N chars`. Error toast (red) on write failure.
+
+### What stayed
+
+- **Extraction:** `[data-message-author-role]` scroll-march (Phase 2.0 algorithm, v0.3 spec). `innerText` capture strategy. Roles filtered to `user`/`assistant`. Empty messages excluded (A5). Visual order by Y ascending.
+- **Single-flight guard** against overlapping captures.
+- **Restoring scroll position** after materialize.
+- **`materializeAndCapture()` entry point** renamed to `materializeAndReturnMarkdown()` (no SW dispatch at the end).
+- **`canonicalUrl()` and `conversationId()`** helpers retained (still useful for logging and dev-console probes).
+
+### Architecture (v0.6)
+
+```
+HOTKEY Alt+Shift+C                    POPUP BUTTON
+        ↓                                     ↓
+  Service Worker                        popup.js
+  (chrome.commands.onCommand)                ↓
+        ↓                              chrome.tabs.sendMessage
+  chrome.tabs.sendMessage                   {type:'EXTRACT'}
+        {type:'EXTRACT_WRITE_TOAST'}             ↓
+        ↓                                 content.js
+  content.js                              - materialize via scroll-march
+  - materialize via scroll-march          - buildMarkdown(messages)
+  - buildMarkdown(messages)               - return {ok, md, chars, count}
+  - navigator.clipboard.writeText(md)         ↓
+    (chatgpt tab focused at hotkey time)  popup.js
+  - showToast('Saved — N chars')          - navigator.clipboard.writeText(md)
+                                               (popup focused, no focus issue)
+                                               ↓
+                                          chrome.tabs.sendMessage
+                                             {type:'TOAST', text}
+                                               ↓
+                                          content.js shows overlay
+```
+
+### Manifest diff (v0.6)
+
+- `permissions`: `storage`, `declarativeNetRequest` → `clipboardWrite`, `activeTab`
+- `host_permissions`: `http://127.0.0.1:4433/*` removed
+- `declarative_net_request` block + `rules.json` deleted
+- `commands.save-clipboard` added (`Alt+Shift+C`)
+- `version` bump `0.1.0` → `0.2.0`
+
+### Why clipboard (TL rationale)
+
+- Removes Hister as a hard runtime dependency (it was already dropped from v0.5 dev loop)
+- Aligns with "personal KB pipeline" — user pastes into whatever tool they want
+- Cuts ~120 lines of network/retry/storage code, no loss of capture fidelity (extraction was the proven part)
+- Avoids Hister label-preservation concern (A11) entirely — the extension no longer touches docs
+
+### Known limitations (v0.6, accepted)
+
+- Hotkey `Alt+Shift+C` requires chatgpt tab to be focused at hotkey time. If focus is elsewhere (DevTools, another window), `writeText` from content script rejects with `NotAllowedError: Document is not focused`. Error toast surfaces the failure. **Future v0.7:** offscreen-doc fallback with legacy `document.execCommand('copy')` if focus becomes a recurring issue.
+- Popup-button write succeeds even with DevTools focused (popup itself is focused + secure context).
+- No re-capture delta UX — second click overwrites clipboard silently. Char count in toast always reflects current snapshot, not delta.
+
+### Verification status
+
+- **Popup-button path:** verified on `chatgpt.com/c/<uuid>` — write succeeds, toast appears, clipboard contains expected Markdown.
+- **Hotkey path:** verified in `probe/` spike — write succeeds when chatgpt tab focused.
+- **Extraction algorithm:** unchanged from v0.5, no regression risk by definition.
+- **Not yet verified:** hotkey with chatgpt tab unfocused (known limitation, deferred to v0.7).
